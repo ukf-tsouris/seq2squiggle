@@ -12,6 +12,8 @@ from datetime import datetime
 import os
 from uuid import uuid4
 import uuid
+import csv
+from pathlib import Path
 
 logger = logging.getLogger("seq2squiggle")
 
@@ -21,6 +23,17 @@ def indexed_uuid(index: int) -> uuid.UUID:
     Generate a UUID4-like but incrementing UUID using an index.
     """
     return uuid.UUID(f"00000000-0000-0000-0000-{index:012d}")
+
+
+def write_template_map(output_path: str, mapping: dict) -> None:
+    """Write a CSV mapping read_id (UUID) -> original FASTA header."""
+    csv_path = Path(str(Path(output_path).with_suffix("")) + "_template_map.csv")
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["read_id", "fasta_header"])
+        for read_id, fasta_header in mapping.items():
+            writer.writerow([read_id, fasta_header])
+    logger.info(f"Template map written to {csv_path}")
 
 
 def get_seq_kit_and_flow_cell(profile_name: str):
@@ -118,6 +131,7 @@ class BLOW5Writer:
 
         records = {}
         auxs = {}
+        template_map = {}
 
         for idx, (read_id, signal) in enumerate(self.signals.items()):
             if len(signal) == 0:
@@ -141,7 +155,8 @@ class BLOW5Writer:
 
             record, aux = s5.get_empty_record(aux=True)
 
-            record["read_id"] = str(indexed_uuid(idx + 1)) #read_id
+            record["read_id"] = str(indexed_uuid(idx + 1))
+            template_map[record["read_id"]] = read_id
             record["read_group"] = 0
             record["digitisation"] = self.digitisation
             record["offset"] = offset_value
@@ -167,6 +182,7 @@ class BLOW5Writer:
                 records, threads=num_processes, batchsize=500, aux=auxs
             )
         s5.close()
+        write_template_map(self.filename, template_map)
 
 
 class POD5Writer:
@@ -228,6 +244,7 @@ class POD5Writer:
         )
 
         pod5_reads = []
+        template_map = {}
 
         for idx, (read_id, signal) in enumerate(self.signals.items()):
             if len(signal) == 0:
@@ -258,8 +275,10 @@ class POD5Writer:
                 reason=pod5.EndReasonEnum.SIGNAL_POSITIVE, forced=False
             )
 
+            read_uuid = indexed_uuid(idx + 1)
+            template_map[str(read_uuid)] = read_id
             read = pod5.Read(
-                read_id=indexed_uuid(idx + 1),
+                read_id=read_uuid,
                 pore=pore,
                 calibration=calibration,
                 read_number=idx,
@@ -274,3 +293,4 @@ class POD5Writer:
         with pod5.Writer(self.filename) as writer:
             for read in pod5_reads:
                 writer.add_read(read)
+        write_template_map(self.filename, template_map)
